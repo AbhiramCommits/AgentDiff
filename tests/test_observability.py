@@ -4,20 +4,20 @@ import logging
 import uuid
 
 from httpx import ASGITransport, AsyncClient
-
-from agentdiff.main import create_app
-from agentdiff.observability import (
-    _correlation_id,
-    JsonFormatter,
-    review_log_context,
-)
-from agentdiff.reviewer import ReviewResult, Reviewer
 from utils import (
     TEST_DATABASE_URL,
     FakeAnthropic,
     FakeMessages,
     make_settings,
 )
+
+from agentdiff.main import create_app
+from agentdiff.observability import (
+    JsonFormatter,
+    _correlation_id,
+    review_log_context,
+)
+from agentdiff.reviewer import Reviewer, ReviewResult
 
 
 def make_record(message: str) -> logging.LogRecord:
@@ -110,7 +110,9 @@ async def test_review_log_line_carries_run_id_and_model() -> None:
         await reviewer.review(diff="diff --git a/x b/x\n", run_id=run_id)
 
         lines = [json.loads(line) for line in stream.getvalue().splitlines()]
-        review_lines = [l for l in lines if "review complete" in l.get("message", "")]
+        review_lines = [
+            entry for entry in lines if "review complete" in entry.get("message", "")
+        ]
         assert review_lines
         assert review_lines[0]["run_id"] == str(run_id)
         assert review_lines[0]["model"] == "claude-opus-5"

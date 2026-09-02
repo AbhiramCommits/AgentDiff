@@ -1,13 +1,7 @@
 from pathlib import Path
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 from prometheus_client import REGISTRY
-
-from agentdiff.gate import GeneratedTest
-from agentdiff.main import create_app
-from agentdiff.models import Category, Severity
-from agentdiff.reviewer import ReviewFinding, ReviewResult
 from utils import (
     GENTEST_FAIL_THEN_PASS,
     PATCH_ACCEPT,
@@ -18,6 +12,11 @@ from utils import (
     make_settings,
     make_status_error,
 )
+
+from agentdiff.gate import GeneratedTest
+from agentdiff.main import create_app
+from agentdiff.models import Category, Severity
+from agentdiff.reviewer import ReviewFinding, ReviewResult
 
 ALL_METRIC_NAMES = [
     "agentdiff_review_latency_seconds",

@@ -2,6 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from utils import FakeReviewer, make_bench_finding, make_bench_outcome
 
 from agentdiff.bench import (
     CorpusCase,
@@ -12,7 +13,6 @@ from agentdiff.bench import (
 )
 from agentdiff.models import Category, Severity
 from agentdiff.reviewer import LLMError
-from utils import FakeReviewer, make_bench_finding, make_bench_outcome
 
 CORPUS = Path(__file__).resolve().parents[1] / "bench" / "corpus"
 

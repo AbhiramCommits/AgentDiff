@@ -1,3 +1,5 @@
+from utils import make_bench_finding
+
 from agentdiff.bench import (
     GroundTruthDefect,
     config_name,
@@ -5,7 +7,6 @@ from agentdiff.bench import (
     parse_config_name,
 )
 from agentdiff.models import Category, Severity
-from utils import make_bench_finding
 
 
 def defect(**overrides) -> GroundTruthDefect:

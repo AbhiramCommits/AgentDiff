@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from .models import BenchmarkResult, Category, Severity
-from .reviewer import LLMError, ReviewFinding, Reviewer
+from .reviewer import LLMError, Reviewer, ReviewFinding
 
 logger = logging.getLogger(__name__)
 

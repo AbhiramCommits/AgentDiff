@@ -3,11 +3,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
+from utils import TEST_DATABASE_URL, make_settings
 
 from agentdiff import models  # noqa: F401
 from agentdiff.db import Base
 from agentdiff.main import create_app
-from utils import TEST_DATABASE_URL, make_settings
 
 
 async def _database_exists(url: str) -> bool:

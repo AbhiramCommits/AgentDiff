@@ -3,10 +3,10 @@ from decimal import Decimal
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from utils import TEST_DATABASE_URL, make_settings
 
 from agentdiff.main import create_app
 from agentdiff.models import BenchmarkResult
-from utils import TEST_DATABASE_URL, make_settings
 
 
 @asynccontextmanager

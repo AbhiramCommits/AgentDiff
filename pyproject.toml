@@ -28,6 +28,8 @@ dev = [
     "pytest-cov>=5.0",
     "coverage>=7.5",
     "testcontainers[postgres]>=4.5",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -38,3 +40,15 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+exclude = ["bench/corpus"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+exclude = ["bench/corpus"]

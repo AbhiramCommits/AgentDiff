@@ -17,7 +17,7 @@ from .config import Settings
 from .metrics import COVERAGE_DELTA, GATE_DURATION, SUGGESTIONS
 from .models import Decision, Finding, GateReason
 from .observability import review_log_context
-from .reviewer import LLMError, PROMPT_VERSION, Reviewer
+from .reviewer import PROMPT_VERSION, LLMError, Reviewer
 
 logger = logging.getLogger(__name__)
 

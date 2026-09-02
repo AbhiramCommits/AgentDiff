@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import NoReturn, TypeVar
+from typing import Any, NoReturn, TypeVar, cast
 
 from anthropic import (
     APIConnectionError,
@@ -11,6 +11,7 @@ from anthropic import (
     NotFoundError,
     RateLimitError,
 )
+from anthropic.types import Usage
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
@@ -18,8 +19,8 @@ from .metrics import (
     COST,
     FINDINGS,
     LLM_ERRORS,
-    REVIEWS_IN_FLIGHT,
     REVIEW_LATENCY,
+    REVIEWS_IN_FLIGHT,
     TOKENS,
 )
 from .models import Category, Severity
@@ -163,9 +164,9 @@ class Reviewer:
     ) -> int:
         count = await client.messages.count_tokens(
             model=model_id,
-            system=system_blocks,
-            messages=messages,
-            thinking={"type": "adaptive"},
+            system=cast(Any, system_blocks),
+            messages=cast(Any, messages),
+            thinking=cast(Any, {"type": "adaptive"}),
         )
         return count.input_tokens
 
@@ -176,7 +177,7 @@ class Reviewer:
         user_content: str,
         max_tokens: int,
         effort: str | None = None,
-    ) -> tuple[ResponseT, object]:
+    ) -> tuple[ResponseT, Usage]:
         model_id = self.settings.model_id
         client = self.client
         system_blocks = self._system_blocks(system_text)
@@ -188,11 +189,11 @@ class Reviewer:
                 parsed = await client.messages.parse(
                     model=model_id,
                     max_tokens=max_tokens,
-                    thinking=thinking,
-                    output_config={"effort": effort},
+                    thinking=cast(Any, thinking),
+                    output_config=cast(Any, {"effort": effort}),
                     output_format=response_model,
-                    system=system_blocks,
-                    messages=messages,
+                    system=cast(Any, system_blocks),
+                    messages=cast(Any, messages),
                 )
                 result = parsed.parsed_output
                 if result is None:
@@ -202,16 +203,19 @@ class Reviewer:
                 response = await client.messages.create(
                     model=model_id,
                     max_tokens=max_tokens,
-                    thinking=thinking,
-                    output_config={
-                        "format": {
-                            "type": "json_schema",
-                            "schema": response_model.model_json_schema(),
+                    thinking=cast(Any, thinking),
+                    output_config=cast(
+                        Any,
+                        {
+                            "format": {
+                                "type": "json_schema",
+                                "schema": response_model.model_json_schema(),
+                            },
+                            "effort": effort,
                         },
-                        "effort": effort,
-                    },
-                    system=system_blocks,
-                    messages=messages,
+                    ),
+                    system=cast(Any, system_blocks),
+                    messages=cast(Any, messages),
                 )
                 text = "".join(
                     block.text for block in response.content if block.type == "text"
@@ -226,7 +230,7 @@ class Reviewer:
         TOKENS.labels(model=model_id, kind="input").inc(usage.input_tokens)
         TOKENS.labels(model=model_id, kind="output").inc(usage.output_tokens)
         TOKENS.labels(model=model_id, kind="cache_read").inc(
-            usage.cache_read_input_tokens
+            usage.cache_read_input_tokens or 0
         )
         COST.labels(model=model_id).inc(
             float(compute_cost_usd(model_id, usage.input_tokens, usage.output_tokens))
@@ -270,7 +274,7 @@ class Reviewer:
                 latency_ms = int((time.monotonic() - started) * 1000)
                 input_tokens = usage.input_tokens
                 output_tokens = usage.output_tokens
-                cache_read_tokens = usage.cache_read_input_tokens
+                cache_read_tokens = usage.cache_read_input_tokens or 0
                 cost_usd = compute_cost_usd(model_id, input_tokens, output_tokens)
 
                 REVIEW_LATENCY.labels(

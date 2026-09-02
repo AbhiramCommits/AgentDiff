@@ -1,0 +1,112 @@
+name: "agentdiff review + gate"
+description: |
+  Reviews a pull request diff with an LLM, gates every suggested patch behind the
+  repo's own test suite in isolated git worktrees, and posts the accepted findings
+  as a single PR comment. Rejected suggestions never fail the build; accepted
+  findings at or above --fail-on severity do.
+
+  Usage (copy-paste into a workflow):
+  ```yaml
+  jobs:
+    agentdiff:
+      runs-on: ubuntu-latest
+      permissions:
+        contents: read
+        pull-requests: write
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+        - uses: actions/setup-python@v5
+          with:
+            python-version: "3.12"
+        - uses: your-org/agentdiff@main
+          with:
+            anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+  ```
+
+inputs:
+  anthropic_api_key:
+    description: "Anthropic API key. When empty (e.g. fork PRs where secrets are unavailable) the action skips with a warning."
+    required: false
+    default: ""
+  base_sha:
+    description: "Base SHA. Defaults to the pull request base."
+    required: false
+    default: ""
+  head_sha:
+    description: "Head SHA. Defaults to the pull request head."
+    required: false
+    default: ""
+  fail_on:
+    description: "Fail the workflow when an accepted finding reaches this severity (blocker|major|minor)."
+    required: false
+    default: "blocker"
+  repo_path:
+    description: "Path to the repository under review."
+    required: false
+    default: "."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install agentdiff and the repo's test tooling
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    - name: Run agentdiff review + gate
+      id: gate
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        if [ -z "$ANTHROPIC_API_KEY" ]; then
+          echo "::warning::ANTHROPIC_API_KEY is not set; skipping the agentdiff review (fork PRs cannot access secrets)."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "exit_code=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -n "${{ inputs.base_sha }}" ]; then
+          BASE="${{ inputs.base_sha }}"
+        else
+          BASE="${{ github.event.pull_request.base.sha }}"
+        fi
+        if [ -n "${{ inputs.head_sha }}" ]; then
+          HEAD="${{ inputs.head_sha }}"
+        else
+          HEAD="${{ github.event.pull_request.head.sha }}"
+        fi
+        python -m agentdiff gate \
+          --base "$BASE" --head "$HEAD" \
+          --repo "${{ inputs.repo_path }}" \
+          --fail-on "${{ inputs.fail_on }}" 2>&1 | tee gate_output.txt
+        EXIT_CODE=${PIPESTATUS[0]}
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        exit 0
+    - name: Post accepted findings as a PR comment
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "${{ steps.gate.outputs.skipped }}" = "true" ] || [ ! -s gate_output.txt ]; then
+          exit 0
+        fi
+        {
+          echo "## agentdiff review"
+          echo
+          echo '```'
+          cat gate_output.txt
+          echo '```'
+          echo
+          echo "_Rejected suggestions never fail the build. Suggestions that survived the test gate at or above the fail-on severity do._"
+        } | gh pr comment "${{ github.event.pull_request.number }}" --body-file -
+    - name: Apply the gate verdict
+      if: always()
+      shell: bash
+      run: |
+        if [ "${{ steps.gate.outputs.skipped }}" = "true" ]; then
+          exit 0
+        fi
+        exit "${{ steps.gate.outputs.exit_code }}"

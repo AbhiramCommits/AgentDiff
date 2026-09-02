@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
+from utils import TEST_DATABASE_URL, make_settings
 
 from agentdiff.main import create_app
 from agentdiff.models import (
@@ -18,7 +19,6 @@ from agentdiff.models import (
     Severity,
 )
 from agentdiff.stats import percentile
-from utils import TEST_DATABASE_URL, make_settings
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
@@ -193,7 +193,7 @@ async def seed(session_factory) -> None:
 
 
 async def test_stats_math_on_seeded_database(db_engine) -> None:
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     engine = create_async_engine(TEST_DATABASE_URL)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)

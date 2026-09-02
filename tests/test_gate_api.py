@@ -3,15 +3,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-
-from agentdiff.gate import GeneratedTest
-from agentdiff.main import create_app
-from agentdiff.models import Category, Finding, GateResult, ReviewRun, RunStatus, Severity
-from agentdiff.reviewer import ReviewFinding, ReviewResult
 from utils import (
     GENTEST_FAIL_THEN_PASS,
     GENTEST_PASSES_BOTH,
@@ -25,6 +19,11 @@ from utils import (
     build_fixture_repo,
     make_settings,
 )
+
+from agentdiff.gate import GeneratedTest
+from agentdiff.main import create_app
+from agentdiff.models import Category, Finding, GateResult, ReviewRun, Severity
+from agentdiff.reviewer import ReviewFinding, ReviewResult
 
 DIFF = "diff --git a/mathlib/core.py b/mathlib/core.py\n@@ -2,3 +2,3 @@\n foo\n-bar\n+baz\n"
 

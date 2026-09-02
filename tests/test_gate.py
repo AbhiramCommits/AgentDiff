@@ -2,14 +2,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
-from agentdiff.gate import (
-    Gate,
-    GeneratedTest,
-    PytestOutcome,
-)
-from agentdiff.models import Category, Decision, Finding, GateReason, Severity
-from agentdiff.reviewer import Reviewer
 from utils import (
     GENTEST_FAIL_THEN_PASS,
     GENTEST_PASSES_BOTH,
@@ -23,6 +15,14 @@ from utils import (
     build_slow_fixture_repo,
     make_settings,
 )
+
+from agentdiff.gate import (
+    Gate,
+    GeneratedTest,
+    PytestOutcome,
+)
+from agentdiff.models import Category, Decision, Finding, GateReason, Severity
+from agentdiff.reviewer import Reviewer
 
 
 @pytest.fixture
@@ -175,7 +175,6 @@ async def test_gate_marks_unverified_when_generated_test_does_not_fail_then_pass
 
 async def test_gate_marks_unverified_when_llm_call_fails(head_sha, repo) -> None:
     from anthropic import NotFoundError
-
     from utils import make_status_error
 
     messages = FakeMessages(error=make_status_error(NotFoundError, status_code=404))

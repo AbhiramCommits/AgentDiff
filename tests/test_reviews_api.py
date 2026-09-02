@@ -2,15 +2,9 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from uuid import uuid4
 
-import pytest
 from anthropic import NotFoundError
-from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-
-from agentdiff.main import create_app
-from agentdiff.models import Category, Finding, ReviewRun, RunStatus, Severity
-from agentdiff.reviewer import PROMPT_VERSION, ReviewFinding, ReviewResult
 from utils import (
     TEST_DATABASE_URL,
     FakeAnthropic,
@@ -19,6 +13,10 @@ from utils import (
     make_status_error,
     make_validation_error,
 )
+
+from agentdiff.main import create_app
+from agentdiff.models import Category, Finding, ReviewRun, RunStatus, Severity
+from agentdiff.reviewer import PROMPT_VERSION, ReviewFinding, ReviewResult
 
 DIFF = "diff --git a/src/app.py b/src/app.py\n@@ -1,3 +1,4 @@\n foo\n+bar\n"
 

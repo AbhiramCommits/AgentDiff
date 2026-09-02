@@ -1,4 +1,7 @@
 import asyncio
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import typer
@@ -8,10 +11,49 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .bench import BenchMetrics, load_corpus, metrics_to_row, run_benchmark
 from .config import Settings
 from .db import create_engine_and_sessionmaker
-from .models import BenchmarkResult
-from .reviewer import PROMPT_VERSION, Reviewer
+from .gate import Gate, GateExecutionError
+from .models import BenchmarkResult, Decision, Finding, Severity
+from .reviewer import PROMPT_VERSION, LLMError, Reviewer, ReviewFinding
 
 app = typer.Typer(help="agentdiff tooling")
+
+SEVERITY_ORDER = {
+    Severity.NIT: 0,
+    Severity.MINOR: 1,
+    Severity.MAJOR: 2,
+    Severity.BLOCKER: 3,
+}
+
+SEVERITY_COLORS = {
+    Severity.BLOCKER: "31",
+    Severity.MAJOR: "33",
+    Severity.MINOR: "36",
+    Severity.NIT: "2",
+}
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _paint(text: str, code: str) -> str:
+    if not sys.stdout.isatty():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _strip(text: str) -> str:
+    return _ANSI.sub("", text)
+
+
+def format_plain_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(_strip(cell)))
+    lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths))]
+    lines.append("  ".join("-" * w for w in widths))
+    for row in rows:
+        lines.append("  ".join(c.ljust(widths[i] + len(c) - len(_strip(c))) for i, c in enumerate(row)))
+    return "\n".join(lines)
 
 
 def _config_column(row: BenchmarkResult) -> str:
@@ -158,3 +200,180 @@ def bench(
             results_file=results_file,
         )
     )
+
+
+def _git_diff(repo: Path, base: str, head: str) -> str:
+    result = subprocess.run(
+        ["git", "diff", base, head],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        typer.echo(f"git diff failed: {result.stderr.strip()}", err=True)
+        raise typer.Exit(code=1)
+    return result.stdout
+
+
+def _finding_row(finding: ReviewFinding) -> list[str]:
+    location = finding.file_path
+    if finding.start_line is not None:
+        location += f":{finding.start_line}"
+        if finding.end_line is not None and finding.end_line != finding.start_line:
+            location += f"-{finding.end_line}"
+    return [
+        _paint(finding.severity.value, SEVERITY_COLORS[finding.severity]),
+        finding.category.value,
+        location,
+        finding.title,
+        f"{finding.confidence:.2f}",
+    ]
+
+
+async def _review(
+    base: str,
+    head: str,
+    repo: Path,
+    json_output: bool,
+    settings: Settings | None = None,
+    reviewer: Reviewer | None = None,
+) -> None:
+    settings = settings or Settings()
+    reviewer = reviewer or Reviewer(settings)
+    diff = _git_diff(repo, base, head)
+    try:
+        outcome = await reviewer.review(diff=diff)
+    except LLMError as exc:
+        typer.echo(f"review failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(outcome.result.model_dump_json(indent=2))
+        return
+    if not outcome.result.findings:
+        typer.echo("No findings.")
+        return
+    rows = [
+        _finding_row(f)
+        for f in sorted(
+            outcome.result.findings,
+            key=lambda f: -SEVERITY_ORDER[f.severity],
+        )
+    ]
+    typer.echo(
+        format_plain_table(
+            ["SEVERITY", "CATEGORY", "LOCATION", "TITLE", "CONF"], rows
+        )
+    )
+    typer.echo(
+        f"tokens in/out/cache_read: {outcome.input_tokens}/{outcome.output_tokens}/"
+        f"{outcome.cache_read_tokens}  cost_usd={outcome.cost_usd}  "
+        f"latency_ms={outcome.latency_ms}"
+    )
+
+
+@app.command()
+def review(
+    base: str = typer.Option(..., "--base", help="Base SHA or ref"),
+    head: str = typer.Option(..., "--head", help="Head SHA or ref"),
+    repo: Path = typer.Option(Path("."), "--repo"),
+    json_output: bool = typer.Option(False, "--json", help="Print raw JSON"),
+) -> None:
+    """Review the diff between two SHAs and print the findings."""
+    asyncio.run(_review(base=base, head=head, repo=repo, json_output=json_output))
+
+
+async def _gate(
+    base: str,
+    head: str,
+    repo: Path,
+    fail_on: str,
+    settings: Settings | None = None,
+    reviewer: Reviewer | None = None,
+) -> int:
+    settings = settings or Settings(workspace_dir=repo)
+    reviewer = reviewer or Reviewer(settings)
+    threshold = Severity(fail_on)
+    diff = _git_diff(repo, base, head)
+    try:
+        outcome = await reviewer.review(diff=diff)
+    except LLMError as exc:
+        typer.echo(f"review failed: {exc}", err=True)
+        return 1
+    findings = [
+        Finding(
+            file_path=f.file_path,
+            start_line=f.start_line,
+            end_line=f.end_line,
+            severity=f.severity,
+            category=f.category,
+            title=f.title,
+            rationale=f.rationale,
+            suggested_patch=f.suggested_patch,
+            confidence=f.confidence,
+        )
+        for f in outcome.result.findings
+    ]
+    try:
+        pairs = await Gate(settings, reviewer).gate_all(findings, head)
+    except GateExecutionError as exc:
+        typer.echo(f"gate failed: {exc}", err=True)
+        return 1
+
+    rows: list[list[str]] = []
+    failing: list[Finding] = []
+    for finding, decision in pairs:
+        rows.append(
+            [
+                _paint(finding.severity.value, SEVERITY_COLORS[finding.severity]),
+                _paint(decision.decision.value, "32" if decision.decision == Decision.ACCEPTED else "31"),
+                decision.reason.value,
+                decision.verification or "-",
+                finding.file_path,
+                finding.title,
+            ]
+        )
+        if (
+            decision.decision == Decision.ACCEPTED
+            and SEVERITY_ORDER[finding.severity] >= SEVERITY_ORDER[threshold]
+        ):
+            failing.append(finding)
+
+    typer.echo(
+        format_plain_table(
+            ["SEVERITY", "DECISION", "REASON", "VERIFIED", "LOCATION", "TITLE"],
+            rows,
+        )
+    )
+    accepted = sum(1 for _, d in pairs if d.decision == Decision.ACCEPTED)
+    rejected = len(pairs) - accepted
+    typer.echo(f"accepted={accepted} rejected={rejected} fail_on={fail_on}")
+    if failing:
+        typer.echo(
+            f"FAIL: {len(failing)} accepted finding(s) at or above {fail_on} severity",
+            err=True,
+        )
+        return 1
+    return 0
+
+
+@app.command()
+def gate(
+    base: str = typer.Option(..., "--base", help="Base SHA or ref"),
+    head: str = typer.Option(..., "--head", help="Head SHA or ref"),
+    repo: Path = typer.Option(Path("."), "--repo"),
+    fail_on: str = typer.Option("major", "--fail-on", help="blocker|major|minor"),
+) -> None:
+    """Review the diff, gate every suggestion behind the test suite, fail on accepted findings."""
+    code = asyncio.run(_gate(base=base, head=head, repo=repo, fail_on=fail_on))
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8000, "--port"),
+) -> None:
+    """Run the API server."""
+    import uvicorn
+
+    uvicorn.run("agentdiff.main:app", host=host, port=port)

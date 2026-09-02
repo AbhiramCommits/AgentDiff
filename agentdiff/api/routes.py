@@ -10,7 +10,7 @@ from ..bench import parse_config_name
 from ..db import get_session
 from ..gate import CONFIDENCE_DOWNGRADE_FACTOR, GateExecutionError
 from ..models import BenchmarkResult, Finding, GateResult, ReviewRun, RunStatus
-from ..reviewer import LLMError, PROMPT_VERSION
+from ..reviewer import PROMPT_VERSION, LLMError
 from ..schemas import (
     BenchmarkCompareResponse,
     BenchmarkResultRead,
