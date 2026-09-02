@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import get_session
-from ..models import Finding, ReviewRun, RunStatus
+from ..gate import CONFIDENCE_DOWNGRADE_FACTOR, GateExecutionError
+from ..models import Finding, GateResult, ReviewRun, RunStatus
 from ..reviewer import LLMError, PROMPT_VERSION
 from ..schemas import ReviewCreateRequest, ReviewRunRead
 
@@ -18,23 +19,54 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _load_run(session: AsyncSession, run_id: UUID) -> ReviewRun:
-    stmt = (
+def _run_query():
+    return (
         select(ReviewRun)
-        .options(selectinload(ReviewRun.findings))
-        .where(ReviewRun.id == run_id)
+        .options(selectinload(ReviewRun.findings).selectinload(Finding.gate_result))
         .execution_options(populate_existing=True)
     )
+
+
+async def _load_run(session: AsyncSession, run_id: UUID) -> ReviewRun:
+    stmt = _run_query().where(ReviewRun.id == run_id)
     run = (await session.execute(stmt)).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail={"error": "review run not found"})
     return run
 
 
+async def _apply_gate_results(
+    session: AsyncSession, request: Request, run: ReviewRun
+) -> None:
+    decisions = await request.app.state.gate.gate_all(list(run.findings), run.head_sha)
+    for finding, decision in decisions:
+        if finding.gate_result is not None:
+            continue
+        session.add(
+            GateResult(
+                finding_id=finding.id,
+                decision=decision.decision,
+                reason=decision.reason,
+                tests_passed=decision.tests_passed,
+                tests_failed=decision.tests_failed,
+                coverage_before=decision.coverage_before,
+                coverage_after=decision.coverage_after,
+                duration_ms=decision.duration_ms,
+                verification=decision.verification,
+            )
+        )
+        if decision.verification == "unverified":
+            finding.confidence = round(
+                finding.confidence * CONFIDENCE_DOWNGRADE_FACTOR, 2
+            )
+    await session.commit()
+
+
 @router.post("/reviews", status_code=201, response_model=ReviewRunRead)
 async def create_review(
     payload: ReviewCreateRequest,
     request: Request,
+    gate: bool = Query(default=False),
     session: AsyncSession = Depends(get_session),
 ) -> ReviewRun:
     run = ReviewRun(
@@ -88,7 +120,14 @@ async def create_review(
     run.cost_usd = outcome.cost_usd
     await session.commit()
 
-    return await _load_run(session, run.id)
+    run = await _load_run(session, run.id)
+    if gate:
+        try:
+            await _apply_gate_results(session, request, run)
+        except GateExecutionError as exc:
+            raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
+        run = await _load_run(session, run.id)
+    return run
 
 
 @router.get("/reviews", response_model=list[ReviewRunRead])
@@ -98,8 +137,7 @@ async def list_reviews(
     session: AsyncSession = Depends(get_session),
 ) -> list[ReviewRun]:
     stmt = (
-        select(ReviewRun)
-        .options(selectinload(ReviewRun.findings))
+        _run_query()
         .order_by(ReviewRun.created_at.desc())
         .limit(limit)
     )
@@ -112,4 +150,23 @@ async def list_reviews(
 async def get_review(
     run_id: UUID, session: AsyncSession = Depends(get_session)
 ) -> ReviewRun:
+    return await _load_run(session, run_id)
+
+
+@router.post("/reviews/{run_id}/gate", response_model=ReviewRunRead)
+async def gate_review(
+    run_id: UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewRun:
+    run = await _load_run(session, run_id)
+    if run.status != RunStatus.COMPLETE:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": f"cannot gate run with status '{run.status.value}'"},
+        )
+    try:
+        await _apply_gate_results(session, request, run)
+    except GateExecutionError as exc:
+        raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
     return await _load_run(session, run_id)

@@ -7,6 +7,7 @@ from sqlalchemy import text
 from .api.routes import router
 from .config import Settings
 from .db import create_engine_and_sessionmaker
+from .gate import Gate
 from .reviewer import Reviewer
 
 
@@ -26,7 +27,9 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
-    app.state.reviewer = Reviewer(settings, client=client)
+    reviewer = Reviewer(settings, client=client)
+    app.state.reviewer = reviewer
+    app.state.gate = Gate(settings, reviewer)
     app.include_router(router)
 
     @app.get("/healthz")

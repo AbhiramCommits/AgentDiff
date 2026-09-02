@@ -46,6 +46,7 @@ class FindingRead(FindingCreate):
     id: UUID
     run_id: UUID
     created_at: datetime
+    gate_result: "GateResultRead | None" = None
 
 
 class ReviewRunRead(BaseModel):
@@ -83,3 +84,4 @@ class GateResultRead(GateResultCreate):
 
     id: UUID
     finding_id: UUID
+    verification: str | None = None

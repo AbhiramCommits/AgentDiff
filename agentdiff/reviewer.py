@@ -2,6 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TypeVar
 
 from anthropic import (
     APIConnectionError,
@@ -16,6 +17,8 @@ from .config import Settings
 from .models import Category, Severity
 
 logger = logging.getLogger(__name__)
+
+ResponseT = TypeVar("ResponseT", bound=BaseModel)
 
 PROMPT_VERSION = "v1"
 MAX_TOKENS = 16000
@@ -92,6 +95,10 @@ class Reviewer:
         self.settings = settings
         self._client = client
 
+    @property
+    def client(self) -> AsyncAnthropic:
+        return self._get_client()
+
     def _get_client(self) -> AsyncAnthropic:
         if self._client is not None:
             return self._client
@@ -99,13 +106,16 @@ class Reviewer:
             return AsyncAnthropic(api_key=self.settings.anthropic_api_key)
         return AsyncAnthropic()
 
-    def _build_system_blocks(self, repo_context: str | None) -> list[dict[str, object]]:
+    def _build_system_text(self, repo_context: str | None) -> str:
         text = SYSTEM_PROMPT
         if repo_context:
             text += (
                 "\n\nRepository conventions provided by the caller. Take them into account "
                 f"when judging findings and writing patches:\n{repo_context}"
             )
+        return text
+
+    def _system_blocks(self, text: str) -> list[dict[str, object]]:
         return [
             {
                 "type": "text",
@@ -129,61 +139,55 @@ class Reviewer:
         )
         return count.input_tokens
 
-    async def _generate(
+    async def structured_call(
         self,
-        client: AsyncAnthropic,
-        model_id: str,
-        system_blocks: list[dict[str, object]],
-        messages: list[dict[str, str]],
-    ) -> tuple[ReviewResult, object]:
+        response_model: type[ResponseT],
+        system_text: str,
+        user_content: str,
+        max_tokens: int,
+        effort: str | None = None,
+    ) -> tuple[ResponseT, object]:
+        model_id = self.settings.model_id
+        client = self.client
+        system_blocks = self._system_blocks(system_text)
+        messages: list[dict[str, str]] = [{"role": "user", "content": user_content}]
         thinking = {"type": "adaptive"}
-        if hasattr(client.messages, "parse"):
-            parsed = await client.messages.parse(
+        effort = effort or self.settings.effort
+        try:
+            if hasattr(client.messages, "parse"):
+                parsed = await client.messages.parse(
+                    model=model_id,
+                    max_tokens=max_tokens,
+                    thinking=thinking,
+                    output_config={"effort": effort},
+                    output_format=response_model,
+                    system=system_blocks,
+                    messages=messages,
+                )
+                result = parsed.parsed_output
+                if result is None:
+                    raise LLMError("model returned no structured output")
+                return result, parsed.usage
+
+            response = await client.messages.create(
                 model=model_id,
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
                 thinking=thinking,
-                output_config={"effort": self.settings.effort},
-                output_format=ReviewResult,
+                output_config={
+                    "format": {
+                        "type": "json_schema",
+                        "schema": response_model.model_json_schema(),
+                    },
+                    "effort": effort,
+                },
                 system=system_blocks,
                 messages=messages,
             )
-            result = parsed.parsed_output
-            if result is None:
-                raise LLMError("model returned no structured output")
-            return result, parsed.usage
-
-        response = await client.messages.create(
-            model=model_id,
-            max_tokens=MAX_TOKENS,
-            thinking=thinking,
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": ReviewResult.model_json_schema(),
-                },
-                "effort": self.settings.effort,
-            },
-            system=system_blocks,
-            messages=messages,
-        )
-        text = "".join(block.text for block in response.content if block.type == "text")
-        if not text.strip():
-            raise LLMError("model returned an empty response")
-        result = ReviewResult.model_validate_json(text)
-        return result, response.usage
-
-    async def review(self, diff: str, repo_context: str | None = None) -> ReviewOutcome:
-        started = time.monotonic()
-        model_id = self.settings.model_id
-        system_blocks = self._build_system_blocks(repo_context)
-        messages: list[dict[str, str]] = [{"role": "user", "content": diff}]
-        client = self._get_client()
-
-        try:
-            estimated_input_tokens = await self._estimate_tokens(
-                client, model_id, system_blocks, messages
-            )
-            result, usage = await self._generate(client, model_id, system_blocks, messages)
+            text = "".join(block.text for block in response.content if block.type == "text")
+            if not text.strip():
+                raise LLMError("model returned an empty response")
+            result = response_model.model_validate_json(text)
+            return result, response.usage
         except NotFoundError as exc:
             raise LLMError(f"model '{model_id}' was not found by the API", 502) from exc
         except RateLimitError as exc:
@@ -196,6 +200,31 @@ class Reviewer:
             raise LLMError(f"could not connect to the Anthropic API: {exc}", 502) from exc
         except ValidationError as exc:
             raise LLMError("model returned malformed structured output", 502) from exc
+
+    async def review(self, diff: str, repo_context: str | None = None) -> ReviewOutcome:
+        started = time.monotonic()
+        model_id = self.settings.model_id
+        system_text = self._build_system_text(repo_context)
+        client = self.client
+        system_blocks = self._system_blocks(system_text)
+        messages: list[dict[str, str]] = [{"role": "user", "content": diff}]
+
+        try:
+            estimated_input_tokens = await self._estimate_tokens(
+                client, model_id, system_blocks, messages
+            )
+        except NotFoundError as exc:
+            raise LLMError(f"model '{model_id}' was not found by the API", 502) from exc
+        except RateLimitError as exc:
+            raise LLMError(f"Anthropic API rate limit exceeded: {exc}", 429) from exc
+        except APIStatusError as exc:
+            raise LLMError(
+                f"Anthropic API error {exc.status_code}: {exc.message}", 502
+            ) from exc
+        except APIConnectionError as exc:
+            raise LLMError(f"could not connect to the Anthropic API: {exc}", 502) from exc
+
+        result, usage = await self.structured_call(ReviewResult, system_text, diff, MAX_TOKENS)
 
         latency_ms = int((time.monotonic() - started) * 1000)
         input_tokens = usage.input_tokens

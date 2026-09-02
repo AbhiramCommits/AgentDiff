@@ -134,6 +134,7 @@ class GateResult(Base):
     coverage_before: Mapped[float | None] = mapped_column(Float)
     coverage_after: Mapped[float | None] = mapped_column(Float)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+    verification: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     finding: Mapped["Finding"] = relationship(back_populates="gate_result")

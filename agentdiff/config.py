@@ -15,3 +15,7 @@ class Settings(BaseSettings):
     model_id: str = "claude-opus-5"
     effort: str = "high"
     workspace_dir: Path = Path(".")
+    gate_timeout_seconds: int = 300
+    gate_concurrency: int = 4
+    coverage_tolerance: float = 0.0
+    coverage_package: str = "agentdiff"
