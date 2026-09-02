@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentdiff dashboard</title>
+<style>
+:root {
+  --bg: #f6f8fa;
+  --fg: #1a1f26;
+  --muted: #5b6470;
+  --accent: #0969da;
+  --accent2: #cf222e;
+  --grid: #d0d7de;
+  --card: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #f85149;
+    --grid: #30363d;
+    --card: #161b22;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.9rem 1.5rem;
+  border-bottom: 1px solid var(--grid);
+}
+header h1 { font-size: 1.2rem; margin: 0; }
+header span { color: var(--muted); font-size: 0.8rem; }
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+}
+.kpi {
+  background: var(--card);
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+.kpi .label { color: var(--muted); font-size: 0.75rem; }
+.kpi .value { font-size: 1.5rem; font-weight: 600; color: var(--accent); margin-top: 0.2rem; }
+.kpi .unit { color: var(--muted); font-size: 0.75rem; }
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1rem;
+  padding: 0 1.5rem 2rem 1.5rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  padding: 1rem;
+}
+.card h2 { font-size: 0.95rem; margin: 0 0 0.5rem 0; }
+canvas { width: 100%; height: 230px; display: block; }
+</style>
+</head>
+<body>
+<header><h1>agentdiff</h1><span id="updated"></span></header>
+<div class="kpis" id="kpis"></div>
+<main>
+  <section class="card"><h2>Gate decisions (share of gated findings)</h2><canvas id="acceptance"></canvas></section>
+  <section class="card"><h2>Rejection reasons (count)</h2><canvas id="reasons"></canvas></section>
+  <section class="card"><h2>Mean cost per review over time (usd)</h2><canvas id="cost"></canvas></section>
+  <section class="card"><h2>Review latency percentiles (ms)</h2><canvas id="latency"></canvas></section>
+  <section class="card"><h2>Latest benchmark per config (precision / recall)</h2><canvas id="bench"></canvas></section>
+</main>
+<script>
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function renderKpis(stats) {
+  const f = (v, digits, unit) => v === null || v === undefined ? "n/a"
+    : `${Number(v).toFixed(digits)}${unit ? " <span class='unit'>" + unit + "</span>" : ""}`;
+  const kpis = [
+    ["Total runs", stats.total_runs, ""],
+    ["Acceptance rate", stats.acceptance_rate === null ? null : stats.acceptance_rate * 100, "%"],
+    ["Mean cost / review", stats.mean_cost_per_review, "usd"],
+    ["Latency p50", stats.latency.p50, "ms"],
+    ["Latency p95", stats.latency.p95, "ms"],
+    ["Mean coverage delta", stats.mean_coverage_delta, "pts"],
+    ["Latest benchmark FP rate", stats.false_positive_rate === null ? null : stats.false_positive_rate * 100, "%"],
+  ];
+  document.getElementById("kpis").innerHTML = kpis.map(([label, value, unit]) => {
+    const shown = value === null || value === undefined ? "n/a" : Number(value).toFixed(2);
+    return `<div class="kpi"><div class="label">${label}</div><div class="value">${shown}</div><div class="unit">${unit}</div></div>`;
+  }).join("");
+}
+
+function niceTicks(max, count) {
+  if (max <= 0) return [0, 1];
+  const step = Math.pow(10, Math.floor(Math.log10(max / count)));
+  const steps = [];
+  for (let v = 0; v <= max + step; v += step) steps.push(v);
+  return steps;
+}
+
+function drawBars(canvas, groups, opts) {
+  const fg = cssVar("--fg"), muted = cssVar("--muted"), grid = cssVar("--grid");
+  const colors = [cssVar("--accent"), cssVar("--accent2"), "#1a7f37", "#bf8700", "#8250df"];
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 600, H = canvas.clientHeight || 230;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  const pad = { l: 52, r: 10, t: 22, b: 44 };
+  const cats = groups.length ? groups[0].values.map(v => v.x) : [];
+  const maxY = Math.max(1, ...groups.flatMap(g => g.values.map(v => v.y)));
+  const ticks = niceTicks(maxY, 4);
+  ctx.font = "11px system-ui";
+  ctx.strokeStyle = grid; ctx.fillStyle = muted;
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  ticks.forEach(t => {
+    const y = pad.t + plotH - (t / (ticks[ticks.length - 1] || 1)) * plotH;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText(String(t), 6, y + 3);
+  });
+  const slot = plotW / Math.max(cats.length, 1);
+  const groupW = groups.length > 1 ? slot / groups.length : slot * 0.6;
+  groups.forEach((g, gi) => {
+    ctx.fillStyle = colors[gi % colors.length];
+    g.values.forEach((v, ci) => {
+      const x = pad.l + ci * slot + (groups.length > 1 ? gi * groupW : slot / 2 - groupW / 2);
+      const h = (v.y / (ticks[ticks.length - 1] || 1)) * plotH;
+      ctx.fillRect(x + 2, pad.t + plotH - h, groupW - 4, h);
+    });
+  });
+  ctx.fillStyle = fg;
+  cats.forEach((c, ci) => {
+    ctx.fillText(String(c), pad.l + ci * slot + slot / 2 - ctx.measureText(String(c)).width / 2, H - 28);
+  });
+  if (opts.xLabel) { ctx.fillStyle = muted; ctx.fillText(opts.xLabel, W / 2 - ctx.measureText(opts.xLabel).width / 2, H - 6); }
+  ctx.save(); ctx.translate(10, pad.t + plotH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = muted; ctx.fillText(opts.yLabel, -ctx.measureText(opts.yLabel).width / 2, 0); ctx.restore();
+  let lx = pad.l;
+  groups.forEach((g, gi) => {
+    ctx.fillStyle = colors[gi % colors.length];
+    ctx.fillRect(lx, 6, 8, 8);
+    ctx.fillStyle = fg;
+    ctx.fillText(g.label, lx + 12, 14);
+    lx += 12 + ctx.measureText(g.label).width + 16;
+  });
+}
+
+function drawLine(canvas, points, opts) {
+  const fg = cssVar("--fg"), muted = cssVar("--muted"), grid = cssVar("--grid"), accent = cssVar("--accent");
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 600, H = canvas.clientHeight || 230;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  const pad = { l: 52, r: 10, t: 22, b: 44 };
+  const maxY = Math.max(1, ...points.map(p => p.y));
+  const ticks = niceTicks(maxY, 4);
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  ctx.font = "11px system-ui";
+  ctx.strokeStyle = grid; ctx.fillStyle = muted;
+  ticks.forEach(t => {
+    const y = pad.t + plotH - (t / (ticks[ticks.length - 1] || 1)) * plotH;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText(String(t), 6, y + 3);
+  });
+  ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = pad.l + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+    const y = pad.t + plotH - (p.y / (ticks[ticks.length - 1] || 1)) * plotH;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = fg;
+  points.forEach((p, i) => {
+    const x = pad.l + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+    ctx.fillText(p.x, x - ctx.measureText(String(p.x)).width / 2, H - 28);
+  });
+  if (opts.xLabel) { ctx.fillStyle = muted; ctx.fillText(opts.xLabel, W / 2 - ctx.measureText(opts.xLabel).width / 2, H - 6); }
+  ctx.save(); ctx.translate(10, pad.t + plotH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = muted; ctx.fillText(opts.yLabel, -ctx.measureText(opts.yLabel).width / 2, 0); ctx.restore();
+}
+
+async function poll() {
+  try {
+    const resp = await fetch("/stats");
+    const stats = await resp.json();
+    renderKpis(stats);
+    const total = stats.gated_findings || 0;
+    const accepted = stats.acceptance_rate === null ? 0 : stats.acceptance_rate * total;
+    const rejected = total - accepted;
+    drawBars(document.getElementById("acceptance"), [
+      { label: "accepted", values: [{ x: "decision", y: accepted }] },
+      { label: "rejected", values: [{ x: "decision", y: rejected }] },
+    ], { xLabel: "", yLabel: "gated findings (count)" });
+    const reasons = Object.entries(stats.rejection_reasons || {}).sort((a, b) => b[1] - a[1]);
+    drawBars(document.getElementById("reasons"), [
+      { label: "rejected findings", values: reasons.map(([k, v]) => ({ x: k, y: v })) },
+    ], { xLabel: "reason", yLabel: "count" });
+    drawLine(document.getElementById("cost"), (stats.cost_over_time || []).map(p => ({ x: p.date, y: p.mean_cost_usd })), { xLabel: "date", yLabel: "usd" });
+    drawBars(document.getElementById("latency"), [
+      { label: "p50", values: [{ x: "p50", y: stats.latency.p50 ?? 0 }] },
+      { label: "p95", values: [{ x: "p95", y: stats.latency.p95 ?? 0 }] },
+    ], { xLabel: "", yLabel: "ms" });
+    const bench = (stats.benchmarks || []).sort((a, b) => a.config.localeCompare(b.config));
+    drawBars(document.getElementById("bench"), [
+      { label: "precision", values: bench.map(b => ({ x: b.config, y: b.precision })) },
+      { label: "recall", values: bench.map(b => ({ x: b.config, y: b.recall })) },
+    ], { xLabel: "config", yLabel: "score" });
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("updated").textContent = "error fetching /stats: " + err;
+  }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>

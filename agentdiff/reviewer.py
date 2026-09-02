@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TypeVar
+from typing import NoReturn, TypeVar
 
 from anthropic import (
     APIConnectionError,
@@ -14,7 +14,16 @@ from anthropic import (
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
+from .metrics import (
+    COST,
+    FINDINGS,
+    LLM_ERRORS,
+    REVIEWS_IN_FLIGHT,
+    REVIEW_LATENCY,
+    TOKENS,
+)
 from .models import Category, Severity
+from .observability import review_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +77,27 @@ class LLMError(Exception):
     def __init__(self, message: str, status_code: int = 502):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _record_and_raise(exc: Exception, model_id: str) -> NoReturn:
+    if isinstance(exc, NotFoundError):
+        LLM_ERRORS.labels(error_type="not_found").inc()
+        raise LLMError(f"model '{model_id}' was not found by the API", 502) from exc
+    if isinstance(exc, RateLimitError):
+        LLM_ERRORS.labels(error_type="rate_limit").inc()
+        raise LLMError(f"Anthropic API rate limit exceeded: {exc}", 429) from exc
+    if isinstance(exc, APIStatusError):
+        LLM_ERRORS.labels(error_type="api_error").inc()
+        raise LLMError(
+            f"Anthropic API error {exc.status_code}: {exc.message}", 502
+        ) from exc
+    if isinstance(exc, APIConnectionError):
+        LLM_ERRORS.labels(error_type="connection_error").inc()
+        raise LLMError(f"could not connect to the Anthropic API: {exc}", 502) from exc
+    if isinstance(exc, ValidationError):
+        LLM_ERRORS.labels(error_type="malformed_output").inc()
+        raise LLMError("model returned malformed structured output", 502) from exc
+    raise exc
 
 
 @dataclass(frozen=True)
@@ -167,81 +197,104 @@ class Reviewer:
                 result = parsed.parsed_output
                 if result is None:
                     raise LLMError("model returned no structured output")
-                return result, parsed.usage
-
-            response = await client.messages.create(
-                model=model_id,
-                max_tokens=max_tokens,
-                thinking=thinking,
-                output_config={
-                    "format": {
-                        "type": "json_schema",
-                        "schema": response_model.model_json_schema(),
+                usage = parsed.usage
+            else:
+                response = await client.messages.create(
+                    model=model_id,
+                    max_tokens=max_tokens,
+                    thinking=thinking,
+                    output_config={
+                        "format": {
+                            "type": "json_schema",
+                            "schema": response_model.model_json_schema(),
+                        },
+                        "effort": effort,
                     },
-                    "effort": effort,
-                },
-                system=system_blocks,
-                messages=messages,
-            )
-            text = "".join(block.text for block in response.content if block.type == "text")
-            if not text.strip():
-                raise LLMError("model returned an empty response")
-            result = response_model.model_validate_json(text)
-            return result, response.usage
-        except NotFoundError as exc:
-            raise LLMError(f"model '{model_id}' was not found by the API", 502) from exc
-        except RateLimitError as exc:
-            raise LLMError(f"Anthropic API rate limit exceeded: {exc}", 429) from exc
-        except APIStatusError as exc:
-            raise LLMError(
-                f"Anthropic API error {exc.status_code}: {exc.message}", 502
-            ) from exc
-        except APIConnectionError as exc:
-            raise LLMError(f"could not connect to the Anthropic API: {exc}", 502) from exc
-        except ValidationError as exc:
-            raise LLMError("model returned malformed structured output", 502) from exc
+                    system=system_blocks,
+                    messages=messages,
+                )
+                text = "".join(
+                    block.text for block in response.content if block.type == "text"
+                )
+                if not text.strip():
+                    raise LLMError("model returned an empty response")
+                result = response_model.model_validate_json(text)
+                usage = response.usage
+        except (NotFoundError, RateLimitError, APIStatusError, APIConnectionError, ValidationError) as exc:
+            _record_and_raise(exc, model_id)
 
-    async def review(self, diff: str, repo_context: str | None = None) -> ReviewOutcome:
+        TOKENS.labels(model=model_id, kind="input").inc(usage.input_tokens)
+        TOKENS.labels(model=model_id, kind="output").inc(usage.output_tokens)
+        TOKENS.labels(model=model_id, kind="cache_read").inc(
+            usage.cache_read_input_tokens
+        )
+        COST.labels(model=model_id).inc(
+            float(compute_cost_usd(model_id, usage.input_tokens, usage.output_tokens))
+        )
+        return result, usage
+
+    async def review(
+        self,
+        diff: str,
+        repo_context: str | None = None,
+        run_id: object | None = None,
+    ) -> ReviewOutcome:
         started = time.monotonic()
         model_id = self.settings.model_id
-        system_text = self._build_system_text(repo_context)
-        client = self.client
-        system_blocks = self._system_blocks(system_text)
-        messages: list[dict[str, str]] = [{"role": "user", "content": diff}]
+        REVIEWS_IN_FLIGHT.inc()
+        with review_log_context(
+            run_id=run_id, model=model_id, prompt_version=PROMPT_VERSION
+        ):
+            try:
+                system_text = self._build_system_text(repo_context)
+                client = self.client
+                system_blocks = self._system_blocks(system_text)
+                messages: list[dict[str, str]] = [{"role": "user", "content": diff}]
 
-        try:
-            estimated_input_tokens = await self._estimate_tokens(
-                client, model_id, system_blocks, messages
-            )
-        except NotFoundError as exc:
-            raise LLMError(f"model '{model_id}' was not found by the API", 502) from exc
-        except RateLimitError as exc:
-            raise LLMError(f"Anthropic API rate limit exceeded: {exc}", 429) from exc
-        except APIStatusError as exc:
-            raise LLMError(
-                f"Anthropic API error {exc.status_code}: {exc.message}", 502
-            ) from exc
-        except APIConnectionError as exc:
-            raise LLMError(f"could not connect to the Anthropic API: {exc}", 502) from exc
+                try:
+                    estimated_input_tokens = await self._estimate_tokens(
+                        client, model_id, system_blocks, messages
+                    )
+                except (
+                    NotFoundError,
+                    RateLimitError,
+                    APIStatusError,
+                    APIConnectionError,
+                ) as exc:
+                    _record_and_raise(exc, model_id)
 
-        result, usage = await self.structured_call(ReviewResult, system_text, diff, MAX_TOKENS)
+                result, usage = await self.structured_call(
+                    ReviewResult, system_text, diff, MAX_TOKENS
+                )
 
-        latency_ms = int((time.monotonic() - started) * 1000)
-        input_tokens = usage.input_tokens
-        output_tokens = usage.output_tokens
-        cache_read_tokens = usage.cache_read_input_tokens
-        cost_usd = compute_cost_usd(model_id, input_tokens, output_tokens)
+                latency_ms = int((time.monotonic() - started) * 1000)
+                input_tokens = usage.input_tokens
+                output_tokens = usage.output_tokens
+                cache_read_tokens = usage.cache_read_input_tokens
+                cost_usd = compute_cost_usd(model_id, input_tokens, output_tokens)
 
-        logger.info(
-            "review complete model=%s findings=%d tokens_in=%d tokens_out=%d cache_read=%d cost_usd=%s latency_ms=%d",
-            model_id,
-            len(result.findings),
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cost_usd,
-            latency_ms,
-        )
+                REVIEW_LATENCY.labels(
+                    model=model_id, prompt_version=PROMPT_VERSION
+                ).observe(time.monotonic() - started)
+                for finding in result.findings:
+                    FINDINGS.labels(
+                        severity=finding.severity.value,
+                        category=finding.category.value,
+                    ).inc()
+
+                logger.info(
+                    "review complete model=%s findings=%d tokens_in=%d tokens_out=%d cache_read=%d cost_usd=%s latency_ms=%d",
+                    model_id,
+                    len(result.findings),
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cost_usd,
+                    latency_ms,
+                )
+            finally:
+                REVIEWS_IN_FLIGHT.dec()
+
         return ReviewOutcome(
             result=result,
             model_id=model_id,

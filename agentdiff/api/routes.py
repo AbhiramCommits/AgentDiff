@@ -88,7 +88,9 @@ async def create_review(
 
     try:
         outcome = await request.app.state.reviewer.review(
-            diff=payload.diff, repo_context=payload.repo_context
+            diff=payload.diff,
+            repo_context=payload.repo_context,
+            run_id=run.id,
         )
     except LLMError as exc:
         run.status = RunStatus.FAILED

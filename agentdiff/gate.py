@@ -14,8 +14,10 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from .config import Settings
+from .metrics import COVERAGE_DELTA, GATE_DURATION, SUGGESTIONS
 from .models import Decision, Finding, GateReason
-from .reviewer import LLMError, Reviewer
+from .observability import review_log_context
+from .reviewer import LLMError, PROMPT_VERSION, Reviewer
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,24 @@ class Gate:
         return list(await asyncio.gather(*(run_one(f) for f in findings)))
 
     async def gate_finding(self, finding: Finding, head_sha: str) -> GateDecision:
+        started = time.monotonic()
+        with review_log_context(
+            run_id=finding.run_id,
+            model=self.settings.model_id,
+            prompt_version=PROMPT_VERSION,
+        ):
+            decision = await self._gate_finding(finding, head_sha)
+        GATE_DURATION.observe(time.monotonic() - started)
+        SUGGESTIONS.labels(
+            decision=decision.decision.value, reason=decision.reason.value
+        ).inc()
+        if decision.coverage_before is not None and decision.coverage_after is not None:
+            COVERAGE_DELTA.observe(
+                decision.coverage_after - decision.coverage_before
+            )
+        return decision
+
+    async def _gate_finding(self, finding: Finding, head_sha: str) -> GateDecision:
         patch = finding.suggested_patch
         if not patch:
             return GateDecision(
