@@ -1,5 +1,6 @@
 import os
 import subprocess
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -8,7 +9,8 @@ import httpx
 from pydantic import ValidationError
 
 from agentdiff.config import Settings
-from agentdiff.reviewer import ReviewResult
+from agentdiff.models import Category, Severity
+from agentdiff.reviewer import ReviewFinding, ReviewOutcome, ReviewResult
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -202,3 +204,64 @@ class FakeMessages:
 class FakeAnthropic:
     def __init__(self, messages: FakeMessages) -> None:
         self.messages = messages
+
+
+def make_bench_finding(
+    *,
+    file_path: str = "app.py",
+    start_line: int = 2,
+    end_line: int = 2,
+    category: Category = Category.CORRECTNESS,
+    severity: Severity = Severity.MAJOR,
+    **overrides: Any,
+) -> ReviewFinding:
+    base: dict[str, Any] = dict(
+        file_path=file_path,
+        start_line=start_line,
+        end_line=end_line,
+        category=category,
+        severity=severity,
+        title="defect",
+        rationale="it is broken",
+        confidence=0.8,
+    )
+    base.update(overrides)
+    return ReviewFinding(**base)
+
+
+def make_bench_outcome(
+    findings: list[ReviewFinding] | None = None,
+    *,
+    latency_ms: int = 100,
+    cost_usd: str = "0.010000",
+    model_id: str = "claude-opus-5",
+) -> ReviewOutcome:
+    return ReviewOutcome(
+        result=ReviewResult(findings=findings or []),
+        model_id=model_id,
+        estimated_input_tokens=0,
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cost_usd=Decimal(cost_usd),
+        latency_ms=latency_ms,
+    )
+
+
+class FakeReviewer:
+    def __init__(
+        self,
+        outcomes: list[ReviewOutcome] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._outcomes = list(outcomes or [])
+        self._error = error
+        self.calls = 0
+
+    async def review(self, diff: str, repo_context: str | None = None) -> ReviewOutcome:
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        if self._outcomes:
+            return self._outcomes.pop(0)
+        return make_bench_outcome([])

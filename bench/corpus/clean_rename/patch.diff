@@ -1,0 +1,7 @@
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
+ def greet(name):
+-    return "Hello, " + name + "!"
++    person = name
++    return "Hello, " + person + "!"

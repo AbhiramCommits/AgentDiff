@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "mutable-default-arg",
+      "file": "app.py",
+      "line_range": [
+        1,
+        1
+      ],
+      "category": "maintainability",
+      "severity": "major"
+    }
+  ]
+}

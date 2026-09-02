@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "unsynchronized-counter",
+      "file": "app.py",
+      "line_range": [
+        9,
+        9
+      ],
+      "category": "correctness",
+      "severity": "major"
+    }
+  ]
+}

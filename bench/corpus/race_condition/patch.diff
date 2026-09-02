@@ -1,0 +1,12 @@
+--- a/app.py
++++ b/app.py
+@@ -4,8 +4,6 @@
+ counter = 0
+-lock = threading.Lock()
+ 
+ 
+ def increment():
+     global counter
+-    with lock:
+-        counter += 1
++    counter += 1

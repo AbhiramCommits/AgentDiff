@@ -1,0 +1,8 @@
+--- a/app.py
++++ b/app.py
+@@ -8,5 +8,3 @@
+ def get_email(users, name):
+     user = find_user(users, name)
+-    if user is None:
+-        return None
+     return user["email"]

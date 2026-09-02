@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "none-dereference",
+      "file": "app.py",
+      "line_range": [
+        10,
+        10
+      ],
+      "category": "correctness",
+      "severity": "major"
+    }
+  ]
+}

@@ -6,11 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..bench import parse_config_name
 from ..db import get_session
 from ..gate import CONFIDENCE_DOWNGRADE_FACTOR, GateExecutionError
-from ..models import Finding, GateResult, ReviewRun, RunStatus
+from ..models import BenchmarkResult, Finding, GateResult, ReviewRun, RunStatus
 from ..reviewer import LLMError, PROMPT_VERSION
-from ..schemas import ReviewCreateRequest, ReviewRunRead
+from ..schemas import (
+    BenchmarkCompareResponse,
+    BenchmarkResultRead,
+    ReviewCreateRequest,
+    ReviewRunRead,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -170,3 +176,65 @@ async def gate_review(
     except GateExecutionError as exc:
         raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
     return await _load_run(session, run_id)
+
+
+async def _latest_benchmark(session: AsyncSession, config: str) -> BenchmarkResult | None:
+    try:
+        model_id, prompt_version, effort = parse_config_name(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+    stmt = (
+        select(BenchmarkResult)
+        .where(
+            BenchmarkResult.model_id == model_id,
+            BenchmarkResult.prompt_version == prompt_version,
+            BenchmarkResult.effort == effort,
+        )
+        .order_by(BenchmarkResult.created_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+@router.get("/benchmarks", response_model=list[BenchmarkResultRead])
+async def list_benchmarks(
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+) -> list[BenchmarkResult]:
+    stmt = (
+        select(BenchmarkResult)
+        .order_by(BenchmarkResult.created_at.desc())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+@router.get("/benchmarks/compare", response_model=BenchmarkCompareResponse)
+async def compare_benchmarks(
+    a: str,
+    b: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row_a = await _latest_benchmark(session, a)
+    row_b = await _latest_benchmark(session, b)
+    if row_a is None:
+        raise HTTPException(
+            status_code=404, detail={"error": f"no benchmark results for config '{a}'"}
+        )
+    if row_b is None:
+        raise HTTPException(
+            status_code=404, detail={"error": f"no benchmark results for config '{b}'"}
+        )
+    numeric_fields = (
+        "precision",
+        "recall",
+        "f1",
+        "mean_latency_ms",
+        "mean_cost_usd",
+        "clean_false_positive_rate",
+    )
+    delta = {
+        field: round(float(getattr(row_b, field) or 0) - float(getattr(row_a, field) or 0), 6)
+        for field in numeric_fields
+    }
+    return {"a": row_a, "b": row_b, "delta": delta}

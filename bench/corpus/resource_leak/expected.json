@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "unclosed-file",
+      "file": "app.py",
+      "line_range": [
+        2,
+        3
+      ],
+      "category": "performance",
+      "severity": "major"
+    }
+  ]
+}

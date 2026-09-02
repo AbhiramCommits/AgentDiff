@@ -1,0 +1,12 @@
+--- a/app.py
++++ b/app.py
+@@ -1,4 +1,7 @@
+ def classify(n):
+-    if n < 0:
++    if is_negative(n):
+         return "negative"
+     return "non-negative"
++
++
++def is_negative(n):
++    return n < 0

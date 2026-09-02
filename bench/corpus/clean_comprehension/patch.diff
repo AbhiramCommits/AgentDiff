@@ -1,0 +1,9 @@
+--- a/app.py
++++ b/app.py
+@@ -1,5 +1,2 @@
+ def squares(numbers):
+-    result = []
+-    for n in numbers:
+-        result.append(n * n)
+-    return result
++    return [n * n for n in numbers]

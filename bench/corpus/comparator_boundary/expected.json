@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "comparator-boundary",
+      "file": "app.py",
+      "line_range": [
+        3,
+        3
+      ],
+      "category": "correctness",
+      "severity": "major"
+    }
+  ]
+}

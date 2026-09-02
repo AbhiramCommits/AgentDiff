@@ -138,3 +138,24 @@ class GateResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     finding: Mapped["Finding"] = relationship(back_populates="gate_result")
+
+
+class BenchmarkResult(Base):
+    __tablename__ = "benchmark_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    model_id: Mapped[str] = mapped_column(String(255))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    effort: Mapped[str] = mapped_column(String(32))
+    true_positives: Mapped[int] = mapped_column(Integer)
+    false_positives: Mapped[int] = mapped_column(Integer)
+    false_negatives: Mapped[int] = mapped_column(Integer)
+    precision: Mapped[float] = mapped_column(Float)
+    recall: Mapped[float] = mapped_column(Float)
+    f1: Mapped[float] = mapped_column(Float)
+    mean_latency_ms: Mapped[float] = mapped_column(Float)
+    mean_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    clean_false_positive_rate: Mapped[float] = mapped_column(Float)
+    total_cases: Mapped[int] = mapped_column(Integer)
+    clean_cases: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

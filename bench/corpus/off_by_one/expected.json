@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "off-by-one-index-check",
+      "file": "app.py",
+      "line_range": [
+        2,
+        2
+      ],
+      "category": "correctness",
+      "severity": "major"
+    }
+  ]
+}

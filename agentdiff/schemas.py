@@ -85,3 +85,30 @@ class GateResultRead(GateResultCreate):
     id: UUID
     finding_id: UUID
     verification: str | None = None
+
+
+class BenchmarkResultRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    model_id: str
+    prompt_version: str
+    effort: str
+    true_positives: int
+    false_positives: int
+    false_negatives: int
+    precision: float
+    recall: float
+    f1: float
+    mean_latency_ms: float
+    mean_cost_usd: Decimal | None = None
+    clean_false_positive_rate: float
+    total_cases: int
+    clean_cases: int
+    created_at: datetime
+
+
+class BenchmarkCompareResponse(BaseModel):
+    a: BenchmarkResultRead
+    b: BenchmarkResultRead
+    delta: dict[str, float]

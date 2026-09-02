@@ -1,0 +1,14 @@
+{
+  "defects": [
+    {
+      "id": "swallowed-zero-division",
+      "file": "app.py",
+      "line_range": [
+        5,
+        5
+      ],
+      "category": "correctness",
+      "severity": "major"
+    }
+  ]
+}

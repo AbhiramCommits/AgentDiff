@@ -1,0 +1,6 @@
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,3 @@
+ def area(width, height):
++    """Return the area of a rectangle."""
+     return width * height
