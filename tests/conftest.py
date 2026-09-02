@@ -1,5 +1,3 @@
-import os
-
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -7,14 +5,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from agentdiff import models  # noqa: F401
-from agentdiff.config import Settings
 from agentdiff.db import Base
 from agentdiff.main import create_app
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://localhost:5432/agentdiff_test",
-)
+from utils import TEST_DATABASE_URL, make_settings
 
 
 async def _database_exists(url: str) -> bool:
@@ -52,11 +45,7 @@ async def db_engine():
 
 @pytest_asyncio.fixture
 async def client(db_engine):
-    settings = Settings(
-        anthropic_api_key="test-key",
-        database_url=TEST_DATABASE_URL,
-    )
-    app = create_app(settings)
+    app = create_app(make_settings(database_url=TEST_DATABASE_URL))
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac

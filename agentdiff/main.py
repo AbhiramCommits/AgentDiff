@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager
 
+from anthropic import AsyncAnthropic
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 
 from .api.routes import router
 from .config import Settings
 from .db import create_engine_and_sessionmaker
+from .reviewer import Reviewer
 
 
 @asynccontextmanager
@@ -14,7 +16,9 @@ async def lifespan(app: FastAPI):
     await app.state.engine.dispose()
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, client: AsyncAnthropic | None = None
+) -> FastAPI:
     settings = settings or Settings()
     engine, session_factory = create_engine_and_sessionmaker(settings.database_url)
 
@@ -22,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.reviewer = Reviewer(settings, client=client)
     app.include_router(router)
 
     @app.get("/healthz")
